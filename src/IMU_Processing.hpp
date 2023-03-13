@@ -163,7 +163,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   
   if (b_first_frame_)
   {
-    Reset();
+    Reset(); // 重置IMUProcess
     N = 1;
     b_first_frame_ = false;
     const auto &imu_acc = meas.imu.front()->linear_acceleration;
@@ -179,26 +179,27 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     const auto &gyr_acc = imu->angular_velocity;
     cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
     cur_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
-
+    // 迭代法更新平均数和协方差 https://blog.csdn.net/weixin_42040262/article/details/127345225
     mean_acc      += (cur_acc - mean_acc) / N;
     mean_gyr      += (cur_gyr - mean_gyr) / N;
-
     cov_acc = cov_acc * (N - 1.0) / N + (cur_acc - mean_acc).cwiseProduct(cur_acc - mean_acc) * (N - 1.0) / (N * N);
     cov_gyr = cov_gyr * (N - 1.0) / N + (cur_gyr - mean_gyr).cwiseProduct(cur_gyr - mean_gyr) * (N - 1.0) / (N * N);
 
-    // cout<<"acc norm: "<<cur_acc.norm()<<" "<<mean_acc.norm()<<endl;
+    // cout<<"acc norm: "<<cur_acc.norm()<<" "<<mean_acc.norm()<<endl; 得到 Measure里的IMU加速度和角速度的协方差
 
     N ++;
   }
-  state_ikfom init_state = kf_state.get_x();
-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  // 更新kf_state里面的重力向量，gyro偏差，雷达IMU外参
+  state_ikfom init_state = kf_state.get_x(); // pvqbbg...
+  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2); // 应该考虑是静置状态，则方向乘以模长得到重力向量的估计
   
-  //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
-  init_state.bg  = mean_gyr;
+  // state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
+  init_state.bg  = mean_gyr; //bias为角速度计值的均值
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;
   kf_state.change_x(init_state);
 
+  // 更新误差传递的初始协方差矩阵
   esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
   init_P.setIdentity();
   init_P(6,6) = init_P(7,7) = init_P(8,8) = 0.00001;
@@ -206,7 +207,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   init_P(15,15) = init_P(16,16) = init_P(17,17) = 0.0001;
   init_P(18,18) = init_P(19,19) = init_P(20,20) = 0.001;
   init_P(21,21) = init_P(22,22) = 0.00001; 
-  kf_state.change_P(init_P);
+  kf_state.change_P(init_P); //设置初始误差协方差矩阵
   last_imu_ = meas.imu.back();
 
 }
@@ -215,15 +216,15 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
 {
   /*** add the imu of the last frame-tail to the of current frame-head ***/
   auto v_imu = meas.imu;
-  v_imu.push_front(last_imu_);
+  v_imu.push_front(last_imu_); //第一次为初始化后的最后一个IMU，之后为上次的最后一个，在本函数下面更新
   const double &imu_beg_time = v_imu.front()->header.stamp.toSec();
   const double &imu_end_time = v_imu.back()->header.stamp.toSec();
   const double &pcl_beg_time = meas.lidar_beg_time;
   const double &pcl_end_time = meas.lidar_end_time;
   
-  /*** sort point clouds by offset time ***/
+  /*** sort point clouds by offset time ***/ //时间从早到晚排序
   pcl_out = *(meas.lidar);
-  sort(pcl_out.points.begin(), pcl_out.points.end(), time_list);
+  sort(pcl_out.points.begin(), pcl_out.points.end(), time_list); 
   // cout<<"[ IMU Process ]: Process lidar from "<<pcl_beg_time<<" to "<<pcl_end_time<<", " \
   //          <<meas.imu.size()<<" imu msgs from "<<imu_beg_time<<" to "<<imu_end_time<<endl;
 
@@ -231,6 +232,13 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   state_ikfom imu_state = kf_state.get_x();
   IMUpose.clear();
   IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
+  // //  Pose6D_()
+  //   : offset_time(0.0)
+  //   , acc()
+  //   , gyr()
+  //   , vel()
+  //   , pos()
+  //   , rot() //9
 
   /*** forward propagation at each imu point ***/
   V3D angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
@@ -344,20 +352,22 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
 
   if (imu_need_init_)
   {
-    /// The very first lidar frame
-    IMU_init(meas, kf_state, init_iter_num);
+    //更新kf_state里面的重力向量，gyro偏差，雷达IMU外参，初始化误差传递的初始协方差矩阵
+    //算了协方差下面的if中不会使用协方差，而是直接使用预设值
+    // init_iter_num 返回了IMU初始化用到的IMU数据数量
+    IMU_init(meas, kf_state, init_iter_num); 
 
     imu_need_init_ = true;
     
-    last_imu_   = meas.imu.back();
+    last_imu_  = meas.imu.back();
 
     state_ikfom imu_state = kf_state.get_x();
-    if (init_iter_num > MAX_INI_COUNT)
-    {
+    if (init_iter_num > MAX_INI_COUNT) //10
+    { // 初理解：协防差是根据实际值计算的，而状态中重力向量模长归化到了9.81,因此，如果实际值大了，需要减少相应协方差，反之亦然
       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
       imu_need_init_ = false;
 
-      cov_acc = cov_acc_scale;
+      cov_acc = cov_acc_scale; //那上面的意义是什么？
       cov_gyr = cov_gyr_scale;
       ROS_INFO("IMU Initial Done");
       // ROS_INFO("IMU Initial Done: Gravity: %.4f %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",\

@@ -113,9 +113,11 @@ PointCloudXYZI::Ptr laserCloudOri(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr corr_normvect(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr _featsArray;
 
+//使用体素网格的方式进行下采样
 pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
 
+//构建ikd tree
 KD_TREE<PointType> ikdtree;
 
 V3F XAxisPoint_body(LIDAR_SP_LEN, 0.0, 0.0);
@@ -126,17 +128,18 @@ V3D Lidar_T_wrt_IMU(Zero3d);
 M3D Lidar_R_wrt_IMU(Eye3d);
 
 /*** EKF inputs and output ***/
-MeasureGroup Measures;
-esekfom::esekf<state_ikfom, 12, input_ikfom> kf;
-state_ikfom state_point;
-vect3 pos_lid;
+MeasureGroup Measures; //当前处理过程中激光雷达和IMU的数据
+esekfom::esekf<state_ikfom, 12, input_ikfom> kf; //？？？初始化卡尔曼滤波的类 state有六个，input有两个
+state_ikfom state_point; //系统状态
+vect3 pos_lid; //？
 
 nav_msgs::Path path;
 nav_msgs::Odometry odomAftMapped;
 geometry_msgs::Quaternion geoQuat;
 geometry_msgs::PoseStamped msg_body_pose;
 
-shared_ptr<Preprocess> p_pre(new Preprocess());
+//创建两个主处理类的实例
+shared_ptr<Preprocess> p_pre(new Preprocess()); //new 的时候直接调用构造函数？LIDAR的
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
 void SigHandle(int sig)
@@ -162,6 +165,7 @@ inline void dump_lio_state_to_log(FILE *fp)
     fflush(fp);
 }
 
+// 把点从雷达系-> IMU系 -> 世界系，输出po
 void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, state_ikfom &s)
 {
     V3D p_body(pi->x, pi->y, pi->z);
@@ -173,7 +177,7 @@ void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, st
     po->intensity = pi->intensity;
 }
 
-
+// 同上，单变成了具体形式，使用全局定义好的 state_point 状态量
 void pointBodyToWorld(PointType const * const pi, PointType * const po)
 {
     V3D p_body(pi->x, pi->y, pi->z);
@@ -218,7 +222,7 @@ void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po)
     po->intensity = pi->intensity;
 }
 
-void points_cache_collect()
+void points_cache_collect() //?
 {
     PointVector points_history;
     ikdtree.acquire_removed_points(points_history);
@@ -282,7 +286,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
     double preprocess_start_time = omp_get_wtime();
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
-        ROS_ERROR("lidar loop back, clear buffer");
+        ROS_ERROR("lidar loop back, clear buffer"); //时间出现奇异就清除掉buffer
         lidar_buffer.clear();
     }
 
@@ -298,6 +302,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 
 double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
+
 void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg) 
 {
     mtx_buffer.lock();
@@ -310,7 +315,7 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
     }
     last_timestamp_lidar = msg->header.stamp.toSec();
     
-    if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
+    if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() ) //且不空？
     {
         printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n",last_timestamp_imu, last_timestamp_lidar);
     }
@@ -318,7 +323,7 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
     if (time_sync_en && !timediff_set_flg && abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
     {
         timediff_set_flg = true;
-        timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu;
+        timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu; //为什么要加0.1？
         printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
     }
 
@@ -337,7 +342,7 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     publish_count ++;
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
-
+    // 同步IMU的时间戳，为什么只有livox计算了timediff_lidar_wrt_imu，普通的雷达没有？
     msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
     {
@@ -347,7 +352,7 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
 
     double timestamp = msg->header.stamp.toSec();
 
-    mtx_buffer.lock();
+    mtx_buffer.lock(); //上锁
 
     if (timestamp < last_timestamp_imu)
     {
@@ -373,22 +378,22 @@ bool sync_packages(MeasureGroup &meas)
     /*** push a lidar scan ***/
     if(!lidar_pushed)
     {
-        meas.lidar = lidar_buffer.front();
+        meas.lidar = lidar_buffer.front(); // 取第一帧的，之后会被pop掉
         meas.lidar_beg_time = time_buffer.front();
-        if (meas.lidar->points.size() <= 1) // time too little
+        if (meas.lidar->points.size() <= 1) // 特征点过少
         {
             lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
             ROS_WARN("Too few input point cloud!\n");
         }
-        else if (meas.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime)
+        else if (meas.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime) //比0.5平均用时少时，使用平均用时？why?
         {
             lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
         }
-        else
+        else //正常情况
         {
             scan_num ++;
-            lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000);
-            lidar_mean_scantime += (meas.lidar->points.back().curvature / double(1000) - lidar_mean_scantime) / scan_num;
+            lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000); 
+            lidar_mean_scantime += (meas.lidar->points.back().curvature / double(1000) - lidar_mean_scantime) / scan_num; //更新平均时长
         }
 
         meas.lidar_end_time = lidar_end_time;
@@ -396,7 +401,7 @@ bool sync_packages(MeasureGroup &meas)
         lidar_pushed = true;
     }
 
-    if (last_timestamp_imu < lidar_end_time)
+    if (last_timestamp_imu < lidar_end_time) //最新一帧IMU数据要大于雷达时间戳 //imu不够时，直接返回了，则上面不重新计算雷达帧，因为还是这一帧，等待IMU buffer充实
     {
         return false;
     }
@@ -408,8 +413,8 @@ bool sync_packages(MeasureGroup &meas)
     {
         imu_time = imu_buffer.front()->header.stamp.toSec();
         if(imu_time > lidar_end_time) break;
-        meas.imu.push_back(imu_buffer.front());
-        imu_buffer.pop_front();
+        meas.imu.push_back(imu_buffer.front()); //imu挤到meas.imu
+        imu_buffer.pop_front(); // imu buffer 删掉一个
     }
 
     lidar_buffer.pop_front();
@@ -750,7 +755,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "laserMapping");
+    ros::init(argc, argv, "laserMapping"); //launch文件里面读出初始参数
     ros::NodeHandle nh;
 
     nh.param<bool>("publish/path_en",path_en, true);
@@ -786,23 +791,26 @@ int main(int argc, char** argv)
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
     
     path.header.stamp    = ros::Time::now();
-    path.header.frame_id ="camera_init";
+    path.header.frame_id ="camera_init"; // 定义path
 
     /*** variables definition ***/
     int effect_feat_num = 0, frame_num = 0;
     double deltaT, deltaR, aver_time_consu = 0, aver_time_icp = 0, aver_time_match = 0, aver_time_incre = 0, aver_time_solve = 0, aver_time_const_H_time = 0;
     bool flg_EKF_converged, EKF_stop_flg = 0;
     
-    FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
-    HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
+    FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0); //+10但不超过180 FOV_DEG？
+    HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0); //？
 
     _featsArray.reset(new PointCloudXYZI());
 
-    memset(point_selected_surf, true, sizeof(point_selected_surf));
+    memset(point_selected_surf, true, sizeof(point_selected_surf)); //memset（a, b, c）的作用是将a中的前c个数字替换为b, 这里就是把做初始化
     memset(res_last, -1000.0f, sizeof(res_last));
+
+    //初始化降采样的体素网格
     downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min, filter_size_surf_min);
     downSizeFilterMap.setLeafSize(filter_size_map_min, filter_size_map_min, filter_size_map_min);
     memset(point_selected_surf, true, sizeof(point_selected_surf));
@@ -810,14 +818,20 @@ int main(int argc, char** argv)
 
     Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
     Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
+
+    // 设置一系列处理IMU的参数
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
     p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
     p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
     p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
 
+    // epsi?
     double epsi[23] = {0.001};
+    // ?为啥不在上面直接初始化为 0.002
     fill(epsi, epsi+23, 0.001);
+
+    //（设置Fx矩阵（用于更新x）、Fw矩阵（用于更新P）、观测模型、迭代次数、收敛阈值）用法非常奇怪
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
     /*** debug record ***/
@@ -852,7 +866,7 @@ int main(int argc, char** argv)
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
 //------------------------------------------------------------------------------------------------------
-    signal(SIGINT, SigHandle);
+    signal(SIGINT, SigHandle); //收到ctrl+c时，认为接到终止信号，flg_exit = true;ROS_WARN("catch sig %d", sig);
     ros::Rate rate(5000);
     bool status = ros::ok();
     while (status)
@@ -864,7 +878,7 @@ int main(int argc, char** argv)
             if (flg_first_scan)
             {
                 first_lidar_time = Measures.lidar_beg_time;
-                p_imu->first_lidar_time = first_lidar_time;
+                p_imu->first_lidar_time = first_lidar_time; //预设IMU处理起始时间
                 flg_first_scan = false;
                 continue;
             }
@@ -878,7 +892,7 @@ int main(int argc, char** argv)
             svd_time   = 0;
             t0 = omp_get_wtime();
 
-            p_imu->Process(Measures, kf, feats_undistort);
+            p_imu->Process(Measures, kf, feats_undistort); //初始化时直接return, 否则计算反向传播
             state_point = kf.get_x();
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
