@@ -1,3 +1,10 @@
+## Note
+
+Added some detailed notes (in Chinese) in the source code for better understanding the package.
+
+Also, the mindmap for reference:
+[MINDMAP](https://1drv.ms/b/s!AqbsZhiuuJaiqEv9Up-LzqrYc124?e=ey9ya3)
+
 ## Related Works and Extended Application
 
 **SLAM:**
