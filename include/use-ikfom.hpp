@@ -44,18 +44,18 @@ MTK::get_cov<process_noise_ikfom>::type process_noise_cov()
 
 //double L_offset_to_I[3] = {0.04165, 0.02326, -0.0284}; // Avia 
 //vect3 Lidar_offset_to_IMU(L_offset_to_I, 3);
-Eigen::Matrix<double, 24, 1> get_f(state_ikfom &s, const input_ikfom &in)
+Eigen::Matrix<double, 24, 1> get_f(state_ikfom &s, const input_ikfom &in) //不更新bias
 {
 	Eigen::Matrix<double, 24, 1> res = Eigen::Matrix<double, 24, 1>::Zero();
 	vect3 omega;
-	in.gyro.boxminus(omega, s.bg);
-	vect3 a_inertial = s.rot * (in.acc-s.ba); 
+	in.gyro.boxminus(omega, s.bg); // input的角速度减去bias 返回omega为真实加速度
+	vect3 a_inertial = s.rot * (in.acc-s.ba); // 世界系下的加速度
 	for(int i = 0; i < 3; i++ ){
-		res(i) = s.vel[i];
-		res(i + 3) =  omega[i]; 
-		res(i + 12) = a_inertial[i] + s.grav[i]; 
+		res(i) = s.vel[i]; // 世界系速度
+		res(i + 3) =  omega[i]; // 角速度 IMU系 没有问题，见公式3
+		res(i + 12) = a_inertial[i] + s.grav[i]; // 世界系加速度 
 	}
-	return res;
+	return res; // 
 }
 
 Eigen::Matrix<double, 24, 23> df_dx(state_ikfom &s, const input_ikfom &in)

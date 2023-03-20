@@ -7,7 +7,7 @@ using namespace std;
 
 #define IS_VALID(a)  ((abs(a)>1e8) ? true : false)
 
-typedef pcl::PointXYZINormal PointType;
+typedef pcl::PointXYZINormal PointType; //xyz曲率上的法向量及曲率
 typedef pcl::PointCloud<PointType> PointCloudXYZI;
 
 enum LID_TYPE{AVIA = 1, VELO16, OUST64}; //{1, 2, 3}
@@ -18,8 +18,8 @@ enum E_jump{Nr_nor, Nr_zero, Nr_180, Nr_inf, Nr_blind};
 
 struct orgtype
 {
-  double range;
-  double dista; 
+  double range; // 点到雷达的水平距离
+  double dista; // 点到下一个点的距离
   double angle[2];
   double intersect;
   E_jump edj[2];
@@ -93,8 +93,8 @@ class Preprocess
 
   // sensor_msgs::PointCloud2::ConstPtr pointcloud;
   PointCloudXYZI pl_full, pl_corn, pl_surf;
-  PointCloudXYZI pl_buff[128]; //maximum 128 line lidar
-  vector<orgtype> typess[128]; //maximum 128 line lidar
+  PointCloudXYZI pl_buff[128]; //maximum 128 line lidar 点容器
+  vector<orgtype> typess[128]; //maximum 128 line lidar 特征容器
   float time_unit_scale;
   int lidar_type, point_filter_num, N_SCANS, SCAN_RATE, time_unit;
   double blind;

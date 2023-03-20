@@ -81,11 +81,11 @@ struct dyn_share_datastruct
 {
 	bool valid;
 	bool converge;
-	Eigen::Matrix<T, Eigen::Dynamic, 1> z;
-	Eigen::Matrix<T, Eigen::Dynamic, 1> h;
-	Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> h_v;
+	Eigen::Matrix<T, Eigen::Dynamic, 1> z; // measure
+	Eigen::Matrix<T, Eigen::Dynamic, 1> h; // estamate measture
+	Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> h_v; // 猜测 v 是论文中式子（14）中的测量原始噪声n, 则这个h_v用于更新h的总体噪声和其协防差
 	Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> h_x;
-	Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> R;
+	Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> R; // 猜测 点云原始噪声n的协方差 
 };
 
 //used for iterated error state EKF update
@@ -236,18 +236,21 @@ public:
 	//for measurement as an Eigen matrix whose dimension is changing.
 	//calculate  measurement (z), estimate measurement (h), partial differention matrices (h_x, h_v) and the noise covariance (R) at the same time, by only one function (h_dyn_share_in).
 	void init_dyn_share(processModel f_in, processMatrix1 f_x_in, processMatrix2 f_w_in, measurementModel_dyn_share h_dyn_share_in, int maximum_iteration, scalar_type limit_vector[n])
-	{
-		f = f_in;
-		f_x = f_x_in;
+	{	
+		//返回这些状态量的初值
+		f = f_in; // 更新量f
+		f_x = f_x_in; // 两个雅克比
 		f_w = f_w_in;
-		h_dyn_share = h_dyn_share_in;
+		h_dyn_share = h_dyn_share_in; //传入观测模型
 
-		maximum_iter = maximum_iteration;
+		maximum_iter = maximum_iteration; //最小迭代次数
+		// 更新state的极限值
 		for(int i=0; i<n; i++)
 		{
 			limit[i] = limit_vector[i];
 		}
 
+		//???
 		x_.build_S2_state();
 		x_.build_SO3_state();
 		x_.build_vect_state();
@@ -1001,7 +1004,7 @@ public:
 	void update_iterated_dyn_share() {
 		
 		int t = 0;
-		dyn_share_datastruct<scalar_type> dyn_share;
+		dyn_share_datastruct<scalar_type> dyn_share; // 存储？？？的数据结构
 		dyn_share.valid = true;
 		dyn_share.converge = true;
 		state x_propagated = x_;
@@ -1011,7 +1014,7 @@ public:
 		for(int i=-1; i<maximum_iter; i++)
 		{
 			dyn_share.valid = true;
-			h_dyn_share (x_,  dyn_share);
+			h_dyn_share (x_,  dyn_share); //该函数是在kf初始时设置的 laserMapping中kf.init_dyn_share
 			//Matrix<scalar_type, Eigen::Dynamic, 1> h = h_dyn_share (x_,  dyn_share);
 			Matrix<scalar_type, Eigen::Dynamic, 1> z = dyn_share.z;
 			Matrix<scalar_type, Eigen::Dynamic, 1> h = dyn_share.h;
@@ -1616,26 +1619,28 @@ public:
 	}
 	
 	//iterated error state EKF update modified for one specific system.
+	// 输入协方差的数值尺度R, 注意与论文的R不同
 	void update_iterated_dyn_share_modified(double R, double &solve_time) {
 		
-		dyn_share_datastruct<scalar_type> dyn_share;
+		dyn_share_datastruct<scalar_type> dyn_share; // 存储各个矩阵使用的数据结构 // 挖坑 搞不清楚scalar_type的由来？？？
 		dyn_share.valid = true;
 		dyn_share.converge = true;
 		int t = 0;
-		state x_propagated = x_;
-		cov P_propagated = P_;
+		state x_propagated = x_; // kf的 state
+		cov P_propagated = P_; // kf的误差协方差
 		int dof_Measurement; 
 		
-		Matrix<scalar_type, n, 1> K_h;
-		Matrix<scalar_type, n, n> K_x; 
+		Matrix<scalar_type, n, 1> K_h; // n是 state的自由度, K * H_x
+		Matrix<scalar_type, n, n> K_x; // K * z
 		
-		vectorized_state dx_new = vectorized_state::Zero();
-		for(int i=-1; i<maximum_iter; i++)
+		vectorized_state dx_new = vectorized_state::Zero(); // <scalar_type, n, 1>
+		for(int i=-1; i<maximum_iter; i++) // 4 
 		{
 			dyn_share.valid = true;	
-			h_dyn_share(x_, dyn_share);
+			h_dyn_share(x_, dyn_share); //本函数在Lasermapping中的 kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi); 初始化
+			// 得到残差h和雅克比H_x
 
-			if(! dyn_share.valid)
+			if(! dyn_share.valid) //特征点数量不足时 valid会返回为false
 			{
 				continue; 
 			}
@@ -1647,26 +1652,30 @@ public:
 				Eigen::Matrix<scalar_type, Eigen::Dynamic, 12> h_x_ = dyn_share.h_x;
 			#endif
 			double solve_start = omp_get_wtime();
-			dof_Measurement = h_x_.rows();
+			dof_Measurement = h_x_.rows(); // 测量维度
 			vectorized_state dx;
-			x_.boxminus(dx, x_propagated);
-			dx_new = dx;
+			x_.boxminus(dx, x_propagated); // 获取误差 x~kk = dx = x_ - x_propagated
+			dx_new = dx; //?
 			
 			
-			
+			//  更新迭代内协方差P， P = J^-1 * P * J^-T
 			P_ = P_propagated;
-			
+			// FAST-LIO2 公式11
 			Matrix<scalar_type, 3, 3> res_temp_SO3;
 			MTK::vect<3, scalar_type> seg_SO3;
 			for (std::vector<std::pair<int, int> >::iterator it = x_.SO3_state.begin(); it != x_.SO3_state.end(); it++) {
 				int idx = (*it).first;
 				int dim = (*it).second;
 				for(int i = 0; i < 3; i++){
-					seg_SO3(i) = dx(idx+i);
+					seg_SO3(i) = dx(idx+i); //所有的SO3？
 				}
 
-				res_temp_SO3 = MTK::A_matrix(seg_SO3).transpose();
+				res_temp_SO3 = MTK::A_matrix(seg_SO3).transpose(); // 函数算出的是 FAST-LIO2 公式11中的A()^(-1)， 再transpose
+
+				// 公式14 最右边项
 				dx_new.template block<3, 1>(idx, 0) = res_temp_SO3 * dx_new.template block<3, 1>(idx, 0);
+
+				// 更新协方差矩阵
 				for(int i = 0; i < n; i++){
 					P_. template block<3, 1>(idx, i) = res_temp_SO3 * (P_. template block<3, 1>(idx, i));	
 				}
@@ -1675,7 +1684,8 @@ public:
 				}
 			}
 
-			Matrix<scalar_type, 2, 2> res_temp_S2;
+
+			Matrix<scalar_type, 2, 2> res_temp_S2; //s2 是 gravity? 这里面在更新什么？
 			MTK::vect<2, scalar_type> seg_S2;
 			for (std::vector<std::pair<int, int> >::iterator it = x_.S2_state.begin(); it != x_.S2_state.end(); it++) {
 				int idx = (*it).first;
@@ -1697,6 +1707,8 @@ public:
 					P_. template block<1, 2>(i, idx) = (P_. template block<1, 2>(i, idx)) * res_temp_S2.transpose();
 				}
 			}
+			// P更新完毕
+ 
 			//Matrix<scalar_type, n, Eigen::Dynamic> K_;
 			//Matrix<scalar_type, n, 1> K_h;
 			//Matrix<scalar_type, n, n> K_x; 
@@ -1711,15 +1723,15 @@ public:
 				K_= (h_x_.transpose() * h_x_ + (P_/R).inverse()).inverse()*h_x_.transpose();
 			}
 			*/
-
+			// 更新卡尔曼增益
 			if(n > dof_Measurement)
 			{
 			//#ifdef USE_sparse
 				//Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> K_temp = h_x * P_ * h_x.transpose();
 				//spMt R_temp = h_v * R_ * h_v.transpose();
 				//K_temp += R_temp;
-				Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x_cur = Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic>::Zero(dof_Measurement, n);
-				h_x_cur.topLeftCorner(dof_Measurement, 12) = h_x_;
+				Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x_cur = Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic>::Zero(dof_Measurement, n); //测量×状态
+				h_x_cur.topLeftCorner(dof_Measurement, 12) = h_x_;  // r t rLR tLR
 				/*
 				h_x_cur.col(0) = h_x_.col(0);
 				h_x_cur.col(1) = h_x_.col(1);
@@ -1734,10 +1746,11 @@ public:
 				h_x_cur.col(10) = h_x_.col(10);
 				h_x_cur.col(11) = h_x_.col(11);
 				*/
-				
+				// 注意 这里的R 是测量的单个协方差尺度 下式等价与FAST-LIO 1 式 18
 				Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> K_ = P_ * h_x_cur.transpose() * (h_x_cur * P_ * h_x_cur.transpose()/R + Eigen::Matrix<double, Dynamic, Dynamic>::Identity(dof_Measurement, dof_Measurement)).inverse()/R;
-				K_h = K_ * dyn_share.h;
-				K_x = K_ * h_x_cur;
+				// 公式14中的
+				K_h = K_ * dyn_share.h; // K * z
+				K_x = K_ * h_x_cur; // K * Hx 
 			//#else
 			//	K_= P_ * h_x.transpose() * (h_x * P_ * h_x.transpose() + h_v * R * h_v.transpose()).inverse();
 			//#endif
@@ -1801,20 +1814,21 @@ public:
 				*/
 				cov P_inv = P_temp.inverse();
 				//std::cout << "line 1781" << std::endl;
-				K_h = P_inv. template block<n, 12>(0, 0) * h_x_.transpose() * dyn_share.h;
+				K_h = P_inv. template block<n, 12>(0, 0) * h_x_.transpose() * dyn_share.h; //K * h = 论文中k*z
 				//std::cout << "line 1780" << std::endl;
 				//cov HTH_cur = cov::Zero();
 				//HTH_cur. template block<12, 12>(0, 0) = HTH;
 				K_x.setZero(); // = cov::Zero();
-				K_x. template block<n, 12>(0, 0) = P_inv. template block<n, 12>(0, 0) * HTH;
+				K_x. template block<n, 12>(0, 0) = P_inv. template block<n, 12>(0, 0) * HTH; // K * H_x
 				//K_= (h_x_.transpose() * h_x_ + (P_/R).inverse()).inverse()*h_x_.transpose();
 			#endif 
 			}
 
 			//K_x = K_ * h_x_;
-			Matrix<scalar_type, n, 1> dx_ = K_h + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
+			// K_h = K * Hx, K_x = K * z(残差)， dx_new = Jk^-1 dx k
+			Matrix<scalar_type, n, 1> dx_ = K_h + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; //FASTLIO2 公式 14
 			state x_before = x_;
-			x_.boxplus(dx_);
+			x_.boxplus(dx_); // 更新状态
 			dyn_share.converge = true;
 			for(int i = 0; i < n ; i++)
 			{
@@ -1824,14 +1838,14 @@ public:
 					break;
 				}
 			}
-			if(dyn_share.converge) t++;
+			if(dyn_share.converge) t++; // 收敛的计数
 			
-			if(!t && i == maximum_iter - 2)
+			if(!t && i == maximum_iter - 2) // 到第三次时已经有收敛
 			{
 				dyn_share.converge = true;
 			}
 
-			if(t > 1 || i == maximum_iter - 1)
+			if(t > 1 || i == maximum_iter - 1) // 最后一次时至少收敛两次， 则更新大大
 			{
 				L_ = P_;
 				//std::cout << "iteration time" << t << "," << i << std::endl; 
@@ -1921,7 +1935,7 @@ public:
 				// }
 				// else
 				//{
-					P_ = L_ - K_x.template block<n, 12>(0, 0) * P_.template block<12, n>(0, 0);
+					P_ = L_ - K_x.template block<n, 12>(0, 0) * P_.template block<12, n>(0, 0); //更新最后一次的卡尔曼增益 FAST-LIO2 公式15
 				//}
 				solve_time += omp_get_wtime() - solve_start;
 				return;
@@ -1963,7 +1977,7 @@ private:
 	cov F_x2 = cov::Identity();
 	cov L_ = cov::Identity();
 
-	processModel *f;
+	processModel *f; //函数指针的用法？
 	processMatrix1 *f_x;
 	processMatrix2 *f_w;
 

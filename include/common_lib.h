@@ -179,7 +179,7 @@ auto set_pose6d(const double t, const Matrix<T, 3, 1> &a, const Matrix<T, 3, 1> 
         rot_kp.pos[i] = p(i);
         for (int j = 0; j < 3; j++)  rot_kp.rot[i*3+j] = R(i,j);
     }
-    return move(rot_kp);
+    return move(rot_kp); //move就一个作用，无脑把传入参数转为右值，why?
 }
 
 /* comment
@@ -248,7 +248,7 @@ bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &
 
     for (int j = 0; j < NUM_MATCH_POINTS; j++)
     {
-        if (fabs(pca_result(0) * point[j].x + pca_result(1) * point[j].y + pca_result(2) * point[j].z + pca_result(3)) > threshold)
+        if (fabs(pca_result(0) * point[j].x + pca_result(1) * point[j].y + pca_result(2) * point[j].z + pca_result(3)) > threshold) //为何加一个(3)
         {
             return false;
         }
