@@ -928,6 +928,11 @@ int main(int argc, char** argv)
             t0 = omp_get_wtime();
 
             p_imu->Process(Measures, kf, feats_undistort); //初始化时直接return, 否则计算反向传播
+            
+            // point pillar???  ensure realtime first
+            // 1. undirstort whole point cloud here,  publish to  detection
+            // 2. before this, process raw point cloud using detection
+            
             state_point = kf.get_x(); // 注意，kf在上面一步已经更新到了最后的点云时间点
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I; //雷达系在最后一个点云时间点的位置
             // 即上面IMU初始化未完成
